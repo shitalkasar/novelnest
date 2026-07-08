@@ -1,8 +1,7 @@
 import React, { createContext, useState, useEffect, useCallback } from 'react';
 
 export const AppContext = createContext();
-
-const API_BASE = 'http://localhost:5000/api';
+const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000/api';
 
 export const AppProvider = ({ children }) => {
   const [books, setBooks] = useState([]);
