@@ -22,8 +22,15 @@ const Header = () => {
   return (
     <header className="glass-panel" style={{
       position: 'sticky',
-      top: '16px',
-      margin: '16px 24px 0 24px',
+      top: '0',
+      margin: '0',
+      borderRadius: '0',
+      borderLeft: 'none',
+      borderRight: 'none',
+      borderTop: 'none',
+      background: 'rgba(10, 11, 16, 0.92)',
+      backdropFilter: 'blur(24px)',
+      WebkitBackdropFilter: 'blur(24px)',
       zIndex: 100,
       padding: '16px 24px',
       display: 'flex',
