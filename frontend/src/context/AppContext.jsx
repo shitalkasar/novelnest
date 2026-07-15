@@ -1,6 +1,4 @@
 import React, { createContext, useState, useEffect, useCallback } from 'react';
-import { collection, getDocs, addDoc, doc, updateDoc, query, orderBy } from 'firebase/firestore';
-import { db } from '../firebase';
 
 export const AppContext = createContext();
 
@@ -85,31 +83,34 @@ export const AppProvider = ({ children }) => {
   // Seed Database if empty
   const seedDatabase = async () => {
     try {
-      showToast('Initializing database with sample books...', 'info');
-      for (const book of sampleBooks) {
-        await addDoc(collection(db, 'books'), { ...book, createdAt: Date.now() });
-      }
-      showToast('Database ready!', 'success');
+      showToast('Initializing local catalog with sample books...', 'info');
+      const booksToSeed = sampleBooks.map((b, index) => ({
+        ...b,
+        _id: 'book_' + Date.now() + '_' + index,
+        createdAt: Date.now() - index * 1000 // slightly different times
+      }));
+      localStorage.setItem('novelnest_books', JSON.stringify(booksToSeed));
+      showToast('Catalog ready!', 'success');
+      return booksToSeed;
     } catch (err) {
       console.error('Error seeding:', err);
+      return [];
     }
   };
 
-  // Fetch books matching current filters from Firestore
+  // Fetch books matching current filters from LocalStorage
   const fetchBooks = useCallback(async (isInitialLoad = false) => {
     setLoading(true);
     try {
       const { search, genre, minPrice, maxPrice, sort } = filters;
       
       // Get all books
-      const querySnapshot = await getDocs(collection(db, 'books'));
-      let data = querySnapshot.docs.map(doc => ({ _id: doc.id, ...doc.data() }));
+      const storedBooks = localStorage.getItem('novelnest_books');
+      let data = storedBooks ? JSON.parse(storedBooks) : [];
 
       // Auto-seed if database is empty on first load
       if (data.length === 0 && isInitialLoad) {
-        await seedDatabase();
-        const newSnapshot = await getDocs(collection(db, 'books'));
-        data = newSnapshot.docs.map(doc => ({ _id: doc.id, ...doc.data() }));
+        data = await seedDatabase();
       }
 
       // Client-side filtering
@@ -137,23 +138,25 @@ export const AppProvider = ({ children }) => {
 
       // Extract unique genres for filtering from raw response
       if (genre === 'All' && !search && !minPrice && !maxPrice) {
-        const uniqueGenres = ['All', ...new Set(data.map((b) => b.genre))];
+        const allBooks = storedBooks ? JSON.parse(storedBooks) : data;
+        const uniqueGenres = ['All', ...new Set(allBooks.map((b) => b.genre))];
         setGenres(uniqueGenres);
       }
     } catch (err) {
       console.error(err);
-      showToast('Could not retrieve catalog. Is Firebase configured?', 'error');
+      showToast('Could not retrieve catalog.', 'error');
     } finally {
       setLoading(false);
     }
   }, [filters, showToast]);
 
-  // Fetch orders from Firestore
+  // Fetch orders from LocalStorage
   const fetchOrders = useCallback(async () => {
     try {
-      const q = query(collection(db, 'orders'), orderBy('createdAt', 'desc'));
-      const querySnapshot = await getDocs(q);
-      const data = querySnapshot.docs.map(doc => ({ _id: doc.id, ...doc.data() }));
+      const storedOrders = localStorage.getItem('novelnest_orders');
+      let data = storedOrders ? JSON.parse(storedOrders) : [];
+      // Sort by latest
+      data.sort((a, b) => b.createdAt - a.createdAt);
       setOrders(data);
     } catch (err) {
       console.error(err);
@@ -254,6 +257,7 @@ export const AppProvider = ({ children }) => {
     const totalAmount = cart.reduce((sum, item) => sum + item.price * item.quantity, 0);
     const orderNumber = 'ORD-' + Math.floor(100000 + Math.random() * 900000);
     const orderPayload = {
+      _id: 'order_' + Date.now(),
       orderNumber,
       items: cart.map((i) => ({
         bookId: i.bookId,
@@ -269,18 +273,24 @@ export const AppProvider = ({ children }) => {
 
     try {
       // 1. Create order
-      const docRef = await addDoc(collection(db, 'orders'), orderPayload);
-      const data = { _id: docRef.id, ...orderPayload };
+      const storedOrders = localStorage.getItem('novelnest_orders');
+      const allOrders = storedOrders ? JSON.parse(storedOrders) : [];
+      allOrders.push(orderPayload);
+      localStorage.setItem('novelnest_orders', JSON.stringify(allOrders));
       
       // 2. Decrement stock for each book in cart
-      for (const item of cart) {
-        const bookRef = doc(db, 'books', item.bookId);
-        await updateDoc(bookRef, {
-          stock: item.stock - item.quantity
-        });
+      const storedBooks = localStorage.getItem('novelnest_books');
+      if (storedBooks) {
+        let allBooks = JSON.parse(storedBooks);
+        for (const item of cart) {
+          allBooks = allBooks.map(b => 
+            b._id === item.bookId ? { ...b, stock: Math.max(0, b.stock - item.quantity) } : b
+          );
+        }
+        localStorage.setItem('novelnest_books', JSON.stringify(allBooks));
       }
 
-      showToast(`Order placed successfully! Order: ${data.orderNumber}`, 'success');
+      showToast(`Order placed successfully! Order: ${orderPayload.orderNumber}`, 'success');
       clearCart();
       setIsCartOpen(false);
       
@@ -289,7 +299,7 @@ export const AppProvider = ({ children }) => {
       
       // Redirect to orders screen
       setActiveView('orders');
-      return { success: true, order: data };
+      return { success: true, order: orderPayload };
     } catch (err) {
       console.error(err);
       showToast('Could not checkout order', 'error');
@@ -302,19 +312,22 @@ export const AppProvider = ({ children }) => {
     try {
       const newBook = {
         ...bookData,
+        _id: 'book_' + Date.now(),
         price: Number(bookData.price),
         stock: Number(bookData.stock),
         rating: Number(bookData.rating || 0),
         createdAt: Date.now()
       };
 
-      const docRef = await addDoc(collection(db, 'books'), newBook);
-      const data = { _id: docRef.id, ...newBook };
+      const storedBooks = localStorage.getItem('novelnest_books');
+      const allBooks = storedBooks ? JSON.parse(storedBooks) : [];
+      allBooks.push(newBook);
+      localStorage.setItem('novelnest_books', JSON.stringify(allBooks));
 
-      showToast(`"${data.title}" added to catalog`, 'success');
+      showToast(`"${newBook.title}" added to catalog`, 'success');
       fetchBooks(); // Refresh catalog
       setIsAddBookOpen(false);
-      return { success: true, book: data };
+      return { success: true, book: newBook };
     } catch (err) {
       console.error(err);
       showToast('Could not add book', 'error');
