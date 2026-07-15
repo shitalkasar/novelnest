@@ -1,7 +1,45 @@
 import React, { createContext, useState, useEffect, useCallback } from 'react';
+import { collection, getDocs, addDoc, doc, updateDoc, query, orderBy } from 'firebase/firestore';
+import { db } from '../firebase';
 
 export const AppContext = createContext();
-const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000/api';
+
+// Sample books for initial seeding
+const sampleBooks = [
+  {
+    title: 'The Shadow of the Wind',
+    author: 'Carlos Ruiz Zafón',
+    description: 'In Barcelona, 1945, a young boy named Daniel is taken by his father to the secret Cemetery of Forgotten Books...',
+    price: 18.99,
+    genre: 'Mystery',
+    coverUrl: 'https://images.unsplash.com/photo-1544947950-fa07a98d237f?auto=format&fit=crop&q=80&w=400',
+    rating: 4.8,
+    stock: 12,
+    featured: true
+  },
+  {
+    title: 'Dune',
+    author: 'Frank Herbert',
+    description: 'Set on the desert planet Arrakis, Dune is the story of the boy Paul Atreides...',
+    price: 14.99,
+    genre: 'Sci-Fi',
+    coverUrl: 'https://images.unsplash.com/photo-1543002588-bfa74002ed7e?auto=format&fit=crop&q=80&w=400',
+    rating: 4.7,
+    stock: 25,
+    featured: true
+  },
+  {
+    title: 'Atomic Habits',
+    author: 'James Clear',
+    description: 'No matter your goals, Atomic Habits offers a proven framework for improving—every day.',
+    price: 16.20,
+    genre: 'Self-Help',
+    coverUrl: 'https://images.unsplash.com/photo-1589829085413-56de8ae18c73?auto=format&fit=crop&q=80&w=400',
+    rating: 4.9,
+    stock: 30,
+    featured: true
+  }
+];
 
 export const AppProvider = ({ children }) => {
   const [books, setBooks] = useState([]);
@@ -44,43 +82,78 @@ export const AppProvider = ({ children }) => {
     }, 3000);
   }, []);
 
-  // Fetch books matching current filters
-  const fetchBooks = useCallback(async () => {
+  // Seed Database if empty
+  const seedDatabase = async () => {
+    try {
+      showToast('Initializing database with sample books...', 'info');
+      for (const book of sampleBooks) {
+        await addDoc(collection(db, 'books'), { ...book, createdAt: Date.now() });
+      }
+      showToast('Database ready!', 'success');
+    } catch (err) {
+      console.error('Error seeding:', err);
+    }
+  };
+
+  // Fetch books matching current filters from Firestore
+  const fetchBooks = useCallback(async (isInitialLoad = false) => {
     setLoading(true);
     try {
       const { search, genre, minPrice, maxPrice, sort } = filters;
-      const params = new URLSearchParams();
       
-      if (search.trim()) params.append('search', search.trim());
-      if (genre && genre !== 'All') params.append('genre', genre);
-      if (minPrice) params.append('minPrice', minPrice);
-      if (maxPrice) params.append('maxPrice', maxPrice);
-      if (sort) params.append('sort', sort);
+      // Get all books
+      const querySnapshot = await getDocs(collection(db, 'books'));
+      let data = querySnapshot.docs.map(doc => ({ _id: doc.id, ...doc.data() }));
 
-      const res = await fetch(`${API_BASE}/books?${params.toString()}`);
-      if (!res.ok) throw new Error('Failed to fetch books');
-      const data = await res.json();
+      // Auto-seed if database is empty on first load
+      if (data.length === 0 && isInitialLoad) {
+        await seedDatabase();
+        const newSnapshot = await getDocs(collection(db, 'books'));
+        data = newSnapshot.docs.map(doc => ({ _id: doc.id, ...doc.data() }));
+      }
+
+      // Client-side filtering
+      if (search.trim()) {
+        const lowerSearch = search.toLowerCase();
+        data = data.filter(b => b.title?.toLowerCase().includes(lowerSearch) || b.author?.toLowerCase().includes(lowerSearch));
+      }
+      if (genre && genre !== 'All') {
+        data = data.filter(b => b.genre === genre);
+      }
+      if (minPrice) {
+        data = data.filter(b => b.price >= Number(minPrice));
+      }
+      if (maxPrice) {
+        data = data.filter(b => b.price <= Number(maxPrice));
+      }
+
+      // Client-side sorting
+      if (sort === 'price-asc') data.sort((a, b) => a.price - b.price);
+      else if (sort === 'price-desc') data.sort((a, b) => b.price - a.price);
+      else if (sort === 'rating') data.sort((a, b) => b.rating - a.rating);
+      else data.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)); // latest
+
       setBooks(data);
 
-      // Extract unique genres for filtering from raw response (if all books are shown)
+      // Extract unique genres for filtering from raw response
       if (genre === 'All' && !search && !minPrice && !maxPrice) {
         const uniqueGenres = ['All', ...new Set(data.map((b) => b.genre))];
         setGenres(uniqueGenres);
       }
     } catch (err) {
       console.error(err);
-      showToast('Could not retrieve catalog. Is backend online?', 'error');
+      showToast('Could not retrieve catalog. Is Firebase configured?', 'error');
     } finally {
       setLoading(false);
     }
   }, [filters, showToast]);
 
-  // Fetch orders from database
+  // Fetch orders from Firestore
   const fetchOrders = useCallback(async () => {
     try {
-      const res = await fetch(`${API_BASE}/orders`);
-      if (!res.ok) throw new Error('Failed to fetch orders');
-      const data = await res.json();
+      const q = query(collection(db, 'orders'), orderBy('createdAt', 'desc'));
+      const querySnapshot = await getDocs(q);
+      const data = querySnapshot.docs.map(doc => ({ _id: doc.id, ...doc.data() }));
       setOrders(data);
     } catch (err) {
       console.error(err);
@@ -90,8 +163,13 @@ export const AppProvider = ({ children }) => {
 
   // Initial loads
   useEffect(() => {
-    fetchBooks();
-  }, [fetchBooks]);
+    fetchBooks(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // Only run once on mount for initial load
+
+  useEffect(() => {
+    fetchBooks(false);
+  }, [filters, fetchBooks]);
 
   useEffect(() => {
     if (activeView === 'orders') {
@@ -174,7 +252,9 @@ export const AppProvider = ({ children }) => {
   // Checkout order submission
   const placeOrder = async (shippingDetails) => {
     const totalAmount = cart.reduce((sum, item) => sum + item.price * item.quantity, 0);
+    const orderNumber = 'ORD-' + Math.floor(100000 + Math.random() * 900000);
     const orderPayload = {
+      orderNumber,
       items: cart.map((i) => ({
         bookId: i.bookId,
         title: i.title,
@@ -182,19 +262,22 @@ export const AppProvider = ({ children }) => {
         quantity: i.quantity
       })),
       shippingDetails,
-      totalAmount
+      totalAmount,
+      createdAt: Date.now(),
+      status: 'Processing'
     };
 
     try {
-      const res = await fetch(`${API_BASE}/orders`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(orderPayload)
-      });
-
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.message || 'Error submitting order');
+      // 1. Create order
+      const docRef = await addDoc(collection(db, 'orders'), orderPayload);
+      const data = { _id: docRef.id, ...orderPayload };
+      
+      // 2. Decrement stock for each book in cart
+      for (const item of cart) {
+        const bookRef = doc(db, 'books', item.bookId);
+        await updateDoc(bookRef, {
+          stock: item.stock - item.quantity
+        });
       }
 
       showToast(`Order placed successfully! Order: ${data.orderNumber}`, 'success');
@@ -209,7 +292,7 @@ export const AppProvider = ({ children }) => {
       return { success: true, order: data };
     } catch (err) {
       console.error(err);
-      showToast(err.message || 'Could not checkout order', 'error');
+      showToast('Could not checkout order', 'error');
       return { success: false, error: err.message };
     }
   };
@@ -217,16 +300,16 @@ export const AppProvider = ({ children }) => {
   // Add new product
   const addBook = async (bookData) => {
     try {
-      const res = await fetch(`${API_BASE}/books`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(bookData)
-      });
+      const newBook = {
+        ...bookData,
+        price: Number(bookData.price),
+        stock: Number(bookData.stock),
+        rating: Number(bookData.rating || 0),
+        createdAt: Date.now()
+      };
 
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.message || 'Error creating book');
-      }
+      const docRef = await addDoc(collection(db, 'books'), newBook);
+      const data = { _id: docRef.id, ...newBook };
 
       showToast(`"${data.title}" added to catalog`, 'success');
       fetchBooks(); // Refresh catalog
@@ -234,7 +317,7 @@ export const AppProvider = ({ children }) => {
       return { success: true, book: data };
     } catch (err) {
       console.error(err);
-      showToast(err.message || 'Could not add book', 'error');
+      showToast('Could not add book', 'error');
       return { success: false, error: err.message };
     }
   };
@@ -269,3 +352,4 @@ export const AppProvider = ({ children }) => {
     </AppContext.Provider>
   );
 };
+
